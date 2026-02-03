@@ -4,5 +4,5 @@ setup(
     name="aemet",
     version="0.1",
     packages=find_packages(),
-    install_requires=["requests"],  # list dependencies here
+    install_requires=["requests"],
 )

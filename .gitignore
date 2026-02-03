@@ -226,3 +226,4 @@ patches
 .pylintrc
 secrets.yml
 .pre-commit-config.yaml
+data/*
