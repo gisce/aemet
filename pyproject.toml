@@ -9,6 +9,8 @@ description = "Library for aemet api requests"
 dependencies = [
     "requests",
     "rapidfuzz",
+    "six",
+    "shapely",
 ]
 
 [tool.setuptools]
