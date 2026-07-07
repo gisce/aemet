@@ -5,9 +5,10 @@ from aemet.predictions.mixins import AreaMixin
 from rapidfuzz import process, utils
 import csv
 import os
-import datetime
 import requests
 from shapely.geometry import shape, Point
+from collections import defaultdict
+from datetime import datetime, timedelta
 
 
 def municipality_codes():
@@ -184,6 +185,9 @@ class PredictionMunicipality(AreaMixin, Endpoint):
 
     @staticmethod
     def parse_period(period):
+        if isinstance(period, tuple) and len(period) == 2:
+            return period
+
         elements = period.split('-')
         if len(elements) == 1 and len(period) == 4:
             elements = period[0:2], period[2:4]
@@ -197,6 +201,11 @@ class PredictionMunicipality(AreaMixin, Endpoint):
             end += 24
         return start, end
 
+    @staticmethod
+    def _generate_hourly_timestamps(date: str) -> list[datetime]:
+        base_dt = datetime.fromisoformat(date)
+        return [base_dt + timedelta(hours=i) for i in range(1, 25)]
+
     def get_period_values(self, period_list):
         res = {}
         if isinstance(period_list, dict):
@@ -205,26 +214,28 @@ class PredictionMunicipality(AreaMixin, Endpoint):
             datos = period_list.get('dato', [])
             len_datos = len(datos) or 1
             hour_diff = int(24 / len_datos)
-            res = {}
+            res = {'values': {}, 'minmax': {}}
             for dato in datos:
                 hour_range = dato.get('hora')
-                for hour in range(hour_range-hour_diff, hour_range):
-                    res[hour] = {'value': dato.get('value')}
-            res['max'] = max
-            res['min'] = min
+                for hour in range(hour_range-hour_diff + 1, hour_range + 1):
+                    res['values'][hour] = dato['value']
+            res['values'] = [res['values'].get(hour) for hour in range(1, 25)]
+            res['minmax']['max'] = max
+            res['minmax']['min'] = min
         elif isinstance(period_list, (list, tuple)):
             if len(period_list) == 1:
                 item = period_list[0]
-                for hour in range(0, 24):
-                    res[hour] = item
+                for hour in range(1, 25):
+                    res[hour] = item['value']
             else:
                 for p in period_list:
                     p['periodo'] = self.parse_period(p['periodo'])
                 sorted_period_list = sorted(period_list, key=lambda d: ((d['periodo'][1]-d['periodo'][0]), d['periodo'][0]))
                 for item in sorted_period_list:
-                    for hour in range(item['periodo'][0], item['periodo'][1]):
+                    for hour in range(item['periodo'][0]+1, item['periodo'][1]+1):
                         if hour not in res:
-                            res[hour] = {k: v for k, v in item.items() if k != 'periodo'}
+                            res[hour] = item['value']  # {k: v for k, v in item.items() if k != 'periodo'}
+            res = [res.get(hour) for hour in range(1, 25)]
         return res
 
     @property
@@ -234,21 +245,33 @@ class PredictionMunicipality(AreaMixin, Endpoint):
         for element in data:
             parsed_data = element.copy()
             parsed_data.pop('prediccion')
-            for key, values in element['prediccion'].items():
-                week_values = {}
-                for value in values:
+
+            res_week_values = defaultdict(list)
+            res_week_values_minmax = {}
+            for week_values in element['prediccion'].values():
+                for day_values in week_values:  # goes though the days in order
                     date = None
-                    day_values = {}
-                    for k, v in value.items():
-                        if k in 'fecha':
-                            date = v
-                        elif k == 'uvMax':
-                            day_values.update({k: {'max': v}})
-                        elif k in ('orto', 'ocaso'):
-                            day_values.update({k: v})
-                        else:
-                            day_values.update({k: self.get_period_values(v)})
-                    week_values.update({date: day_values})
-                parsed_data['data'] = week_values
+                    res_day_minmax_values = {}
+                    for field, val in day_values.items():
+                        if field in 'fecha':
+                            date = val
+                        elif field == 'uvMax':
+                            res_day_minmax_values.update({field: {'max': val}})
+                        elif field in ('orto', 'ocaso'):
+                            res_day_minmax_values.update({field: val})
+                        elif field in ('viento'):
+                            dv_val = [{'value': v.get('direccion'), 'periodo': v.get('periodo')} for v in val]
+                            vv_val = [{'value': v.get('velocidad'), 'periodo': v.get('periodo')} for v in val]
+                            res_week_values['velocidadViento'].extend(self.get_period_values(vv_val))
+                            res_week_values['direccionViento'].extend(self.get_period_values(dv_val))
+                        elif field in ('temperatura', 'sensTermica', 'humedadRelativa'):
+                            values = self.get_period_values(val)
+                            res_week_values[field].extend(values['values'])
+                            res_day_minmax_values.update({field: values['minmax']})
+                        else:  # probPrecipitacion, cotaNieveProv, estadoCielo, rachaMax
+                            res_week_values[field].extend(self.get_period_values(val))
+                    res_week_values['fecha'].extend(self._generate_hourly_timestamps(date))
+                    res_week_values_minmax.update({date: res_day_minmax_values})
+            parsed_data['prediccion'] = (res_week_values, res_week_values_minmax)
             res.append(parsed_data)
         return res
