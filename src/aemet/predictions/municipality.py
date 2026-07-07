@@ -68,11 +68,37 @@ def get_municipality_info_ign_api(name=None, lat=None, lon=None, skip_geometry=F
     return municipalities
 
 
+#  https://www.cartociudad.es/web/portal/directorio-de-servicios/geoprocesamiento
 def get_municipality_info_cartociudad_api(lat, lon):
     params = {'lat': lat, 'lon': lon}
     r = requests.get(
         'https://www.cartociudad.es/geocoder/api/geocoder/reverseGeocode',
         params=params,
+    )
+    r.raise_for_status()
+    return r.json()
+
+
+# https://ovc.catastro.meh.es/OVCServWeb/OVCWcfCallejero/COVCCoordenadas.svc/json/help
+def get_municipalities_info_catastro_api(lat, lon):
+    r = requests.get(
+        'http://ovc.catastro.meh.es/OVCServWeb/OVCWcfCallejero/'
+        'COVCCoordenadas.svc/json/Consulta_RCCOOR_Distancia'
+        '?CoorX={COORX}&CoorY={COORY}&SRS={SRS}'.format(
+            COORX=lon, COORY=lat, SRS='EPSG:4326'
+        )
+    )
+    r.raise_for_status()
+    return r.json()
+
+
+# https://github.com/pelias/documentation/
+def get_municipalities_info_geolocalizador_idee(lat, lon):
+    r = requests.get(
+        'https://geolocalizador.idee.es/v1/reverse'
+        '?point.lat={lat}&point.lon={lon}&size=1'.format(
+            lat=lat, lon=lon
+        )
     )
     r.raise_for_status()
     return r.json()
