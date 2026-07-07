@@ -80,7 +80,7 @@ def get_municipality_info_cartociudad_api(lat, lon):
 
 
 # https://ovc.catastro.meh.es/OVCServWeb/OVCWcfCallejero/COVCCoordenadas.svc/json/help
-def get_municipalities_info_catastro_api(lat, lon):
+def get_municipality_info_catastro_api(lat, lon):
     r = requests.get(
         'http://ovc.catastro.meh.es/OVCServWeb/OVCWcfCallejero/'
         'COVCCoordenadas.svc/json/Consulta_RCCOOR_Distancia'
@@ -93,7 +93,7 @@ def get_municipalities_info_catastro_api(lat, lon):
 
 
 # https://github.com/pelias/documentation/
-def get_municipalities_info_geolocalizador_idee(lat, lon):
+def get_municipality_info_geolocalizador_idee(lat, lon):
     r = requests.get(
         'https://geolocalizador.idee.es/v1/reverse'
         '?point.lat={lat}&point.lon={lon}&size=1'.format(
