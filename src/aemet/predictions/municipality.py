@@ -138,6 +138,8 @@ class PredictionMunicipality(AreaMixin, Endpoint):
     municipality_codes = staticmethod(municipality_codes)
     get_municipality_info_ign_api = staticmethod(get_municipality_info_ign_api)
     get_municipality_info_cartociudad_api = staticmethod(get_municipality_info_cartociudad_api)
+    get_municipality_info_catastro_api = staticmethod(get_municipality_info_catastro_api)
+    get_municipality_info_geolocalizador_idee = staticmethod(get_municipality_info_geolocalizador_idee)
     municipality_search = staticmethod(municipality_search)
 
     # https://web2.aemet.es/es/eltiempo/prediccion/municipios/banyoles-id17015/ayuda, https://web2.aemet.es/es/eltiempo/prediccion/municipios/horas/banyoles-id17015
