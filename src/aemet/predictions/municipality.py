@@ -8,7 +8,12 @@ import os
 import requests
 from shapely.geometry import shape, Point
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+import functools
+
+SINGLE = 0
+RANGE = 1
+COMPACT_RANGE = 2
 
 
 def municipality_codes():
@@ -143,10 +148,6 @@ class PredictionMunicipality(AreaMixin, Endpoint):
     get_municipality_info_geolocalizador_idee = staticmethod(get_municipality_info_geolocalizador_idee)
     municipality_search = staticmethod(municipality_search)
 
-    # https://web2.aemet.es/es/eltiempo/prediccion/municipios/banyoles-id17015/ayuda, https://web2.aemet.es/es/eltiempo/prediccion/municipios/horas/banyoles-id17015
-    # todo: wind is given in the website as [0,1],the end is 1, that I give it with a 0
-    # todo: different from thre rest, given in as [0,1] the end is 1 (10 min), and I give it as 1
-    # todo: fix it
     def __init__(self, client):
         super(PredictionMunicipality, self).__init__(client)
         self._area = None
@@ -182,96 +183,153 @@ class PredictionMunicipality(AreaMixin, Endpoint):
         else:
             return "prediccion/especifica/municipio/horaria/{}".format(self._area)
 
-
     @staticmethod
-    def parse_period(period):
+    def parse_period(period, period_type='SINGLE'):
         if isinstance(period, tuple) and len(period) == 2:
             return period
 
-        elements = period.split('-')
-        if len(elements) == 1 and len(period) == 4:
-            elements = period[0:2], period[2:4]
-        if len(elements) == 1:
+        if period_type == SINGLE:  # single int in str format
             start = int(period)
             end = start + 1
-        else:
-            start, end = elements
+
+        elif period_type == RANGE:  # two ints separated by '-'
+            start, end = period.split('-')
+
+        elif period_type == COMPACT_RANGE:  # two str ints both of size 2
+            start, end = period[0:2], period[2:4]
+
         start, end = int(start), int(end)
+
         if end < start:
             end += 24
         return start, end
 
     @staticmethod
     def _generate_hourly_timestamps(date: str) -> list[datetime]:
-        base_dt = datetime.fromisoformat(date)
+        base_dt = datetime.fromisoformat(date).replace(tzinfo=timezone.utc)
         return [base_dt + timedelta(hours=i) for i in range(1, 25)]
 
-    def get_period_values(self, period_list):
-        res = {}
-        if isinstance(period_list, dict):
-            max = period_list.get('maxima')
-            min = period_list.get('minima')
-            datos = period_list.get('dato', [])
-            len_datos = len(datos) or 1
-            hour_diff = int(24 / len_datos)
-            res = {'values': {}, 'minmax': {}}
-            for dato in datos:
-                hour_range = dato.get('hora')
-                for hour in range(hour_range-hour_diff + 1, hour_range + 1):
-                    res['values'][hour] = dato['value']
-            res['values'] = [res['values'].get(hour) for hour in range(1, 25)]
-            res['minmax']['max'] = max
-            res['minmax']['min'] = min
-        elif isinstance(period_list, (list, tuple)):
-            if len(period_list) == 1:
-                item = period_list[0]
-                for hour in range(1, 25):
-                    res[hour] = item['value']
-            else:
-                for p in period_list:
-                    p['periodo'] = self.parse_period(p['periodo'])
-                sorted_period_list = sorted(period_list, key=lambda d: ((d['periodo'][1]-d['periodo'][0]), d['periodo'][0]))
-                for item in sorted_period_list:
-                    for hour in range(item['periodo'][0]+1, item['periodo'][1]+1):
-                        if hour not in res:
-                            res[hour] = item['value']  # {k: v for k, v in item.items() if k != 'periodo'}
-            res = [res.get(hour) for hour in range(1, 25)]
+    def get_period_values_minmax(self, period_list):
+        res = {'values': [None] * 24, 'minmax': {}}
+        res['minmax']['max'] = period_list.get('maxima')
+        res['minmax']['min'] = period_list.get('minima')
+
+        datos = period_list.get('dato', [])
+        len_datos = len(datos) or 1
+        hour_diff = int(24 / len_datos)
+        for dato in datos:
+            hour_range = dato.get('hora')
+            for hour in range(hour_range-hour_diff, hour_range):
+                res['values'][hour] = dato['value']
         return res
+
+    def get_period_values_list(self, period_list, period_type):
+        for p in period_list:
+            p['periodo'] = self.parse_period(p['periodo'], period_type=period_type)
+        sorted_period_list = sorted(period_list, key=lambda d: ((d['periodo'][1]-d['periodo'][0]), d['periodo'][0]))
+        range_values = max(24, sorted_period_list[-1]['periodo'][1])
+        res = [None] * range_values
+        for item in sorted_period_list:
+            for hour in range(item['periodo'][0], item['periodo'][1]):
+                if res[hour] is None:
+                    res[hour] = item['value']
+        return res
+
+    def get_period_values_int(self, period_list):
+        return [period_list[0]['value']] * 24  # no period in the peirod_list
+
 
     @property
     def values(self):
         data = self._data if self._data else self.data
-        res = []
-        for element in data:
-            parsed_data = element.copy()
-            parsed_data.pop('prediccion')
-
-            res_week_values = defaultdict(list)
-            res_week_values_minmax = {}
-            for week_values in element['prediccion'].values():
-                for day_values in week_values:  # goes though the days in order
-                    date = None
-                    res_day_minmax_values = {}
-                    for field, val in day_values.items():
-                        if field in 'fecha':
-                            date = val
-                        elif field == 'uvMax':
-                            res_day_minmax_values.update({field: {'max': val}})
-                        elif field in ('orto', 'ocaso'):
-                            res_day_minmax_values.update({field: val})
-                        elif field in ('viento'):
-                            dv_val = [{'value': v.get('direccion'), 'periodo': v.get('periodo')} for v in val]
-                            vv_val = [{'value': v.get('velocidad'), 'periodo': v.get('periodo')} for v in val]
-                            res_week_values['velocidadViento'].extend(self.get_period_values(vv_val))
-                            res_week_values['direccionViento'].extend(self.get_period_values(dv_val))
-                        elif field in ('temperatura', 'sensTermica', 'humedadRelativa'):
-                            values = self.get_period_values(val)
-                            res_week_values[field].extend(values['values'])
-                            res_day_minmax_values.update({field: values['minmax']})
-                        else:  # probPrecipitacion, cotaNieveProv, estadoCielo, rachaMax
-                            res_week_values[field].extend(self.get_period_values(val))
-                    res_week_values['fecha'].extend(self._generate_hourly_timestamps(date))
-                    res_week_values_minmax.update({date: res_day_minmax_values})
-            parsed_data['prediccion'] = (res_week_values, res_week_values_minmax)
-            res.append(parsed_data)
+        if self._daily:
+            res = self._get_daily_data(data)
+        elif self._hourly:
+            res = self._get_hourly_data(data)
+        else:
+            raise ValueError("Must declare whether the municipality prediction is daily or hourly")
         return res
+
+    def _get_predictions(self, data):
+        if not data:
+            return []
+
+        element = data[0]
+        prediccion = element.get('prediccion')
+        if not prediccion:
+            return []
+
+        weekly_values = prediccion['dia']
+        if not weekly_values:
+            return []
+
+        return weekly_values
+
+    def _get_daily_data(self, data):
+        weekly_values = self._get_predictions(data)
+
+        rwv = defaultdict(list)  # response weekly values
+        rwv_minmax = {}  # response weekly values minmax fields
+        for day, day_values in enumerate(weekly_values):  # goes though the days in order
+            if day <= 3:
+                get_vals = functools.partial(self.get_period_values_list, period_type=RANGE)
+            else:
+                get_vals = self.get_period_values_int
+            date = None
+            rdv_minmax = {}  # response daily values minmax fields
+            for field, val in day_values.items():
+                if field in 'fecha':
+                    date = val
+                elif field == 'uvMax':
+                    rdv_minmax.update({field: {'max': val}})
+                elif field in ('viento'):
+                    vv_val = [{'value': v.get('velocidad'), 'periodo': v.get('periodo')} for v in val]
+                    dv_val = [{'value': v.get('direccion'), 'periodo': v.get('periodo')} for v in val]
+                    rwv['velocidadViento'].extend(get_vals(vv_val))
+                    rwv['direccionViento'].extend(get_vals(dv_val))
+                elif field in ('temperatura', 'sensTermica', 'humedadRelativa'):
+                    values = self.get_period_values_minmax(val)
+                    rwv[field].extend(values['values'])
+                    rdv_minmax.update({field: values['minmax']})
+                elif field in ('probPrecipitacion', 'cotaNieveProv', 'estadoCielo', 'rachaMax'):
+                    rwv[field].extend(get_vals(val))
+                else:
+                    raise Exception("Field {} hasn't been taken into account".format(field))
+            rwv['fecha'].extend(self._generate_hourly_timestamps(date))
+            rwv_minmax.update({date: rdv_minmax})
+
+        return rwv, rwv_minmax
+
+    def _get_hourly_data(self, data):
+        weekly_values = self._get_predictions(data)
+
+        rwv = defaultdict(list)
+        rwv_minmax = {}
+        for day, day_values in enumerate(weekly_values):
+            date = None
+            rdv_minmax = {}
+            for field, val in day_values.items():
+                if field in 'fecha':
+                    date = val
+                elif field in ('orto', 'ocaso'):
+                    rdv_minmax.update({field: val})
+                elif field in ('vientoAndRachaMax',):
+                    racha_max_val = [d for d in val if len(d) == 2]
+                    viento_val = [d for d in val if len(d) == 3]
+                    dv_val = [{'value': v.get('direccion', [None])[0], 'periodo': v.get('periodo')} for v in viento_val]
+                    vv_val = [{'value': v.get('velocidad', [None])[0], 'periodo': v.get('periodo')} for v in viento_val]
+                    rwv['velocidadViento'].extend(self.get_period_values_list(vv_val, period_type=SINGLE))
+                    rwv['direccionViento'].extend(self.get_period_values_list(dv_val, period_type=SINGLE))
+                    rwv['rachaMax'].extend(self.get_period_values_list(racha_max_val, period_type=SINGLE))
+                elif field in ('probPrecipitacion', 'probTormenta', 'probNieve'):
+                    values = self.get_period_values_list(val, period_type=COMPACT_RANGE)
+                    if day > 0:
+                        values = values[2:]
+                    rwv[field].extend(values)
+                elif field in ('estadoCielo', 'precipitacion', 'nieve', 'temperatura', 'sensTermica', 'humedadRelativa'):
+                    rwv[field].extend(self.get_period_values_list(val, period_type=SINGLE))
+                else:
+                    raise Exception("Field {} hasn't been taken into account".format(field))
+            rwv['fecha'].extend(self._generate_hourly_timestamps(date))
+            rwv_minmax.update({date: rdv_minmax})
+        return rwv, rwv_minmax
