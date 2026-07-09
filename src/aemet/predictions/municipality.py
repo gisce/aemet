@@ -227,7 +227,9 @@ class PredictionMunicipality(AreaMixin, Endpoint):
         for p in period_list:
             p['periodo'] = self.parse_period(p['periodo'], period_type=period_type)
         sorted_period_list = sorted(period_list, key=lambda d: ((d['periodo'][1]-d['periodo'][0]), d['periodo'][0]))
-        range_values = max(24, sorted_period_list[-1]['periodo'][1])
+        range_values = 24
+        if sorted_period_list:
+            range_values = max(24, sorted_period_list[-1]['periodo'][1])
         res = [None] * range_values
         for item in sorted_period_list:
             for hour in range(item['periodo'][0], item['periodo'][1]):
@@ -237,7 +239,6 @@ class PredictionMunicipality(AreaMixin, Endpoint):
 
     def get_period_values_int(self, period_list):
         return [period_list[0]['value']] * 24  # no period in the peirod_list
-
 
     @property
     def values(self):
